@@ -240,10 +240,7 @@ func resolveGVR(ctx context.Context, c *k8s.Clients, resource, apiGroup, apiVers
 			if r.Name == resource {
 				version := apiVersion
 				if version == "" {
-					version = list.GroupVersionKind().Version
-					if version == "" {
-						version = "v1"
-					}
+					version = groupVersionToVersion(list.GroupVersion)
 				}
 				return schema.GroupVersionResource{
 					Group:    group,
@@ -254,6 +251,14 @@ func resolveGVR(ctx context.Context, c *k8s.Clients, resource, apiGroup, apiVers
 		}
 	}
 	return schema.GroupVersionResource{}, fmt.Errorf("resource %q not found", resource)
+}
+
+// groupVersionToVersion extracts version from GroupVersion (e.g. "apps/v1" → "v1").
+func groupVersionToVersion(gv string) string {
+	if idx := strings.Index(gv, "/"); idx >= 0 {
+		return gv[idx+1:]
+	}
+	return gv
 }
 
 func MustNewToolSet(clients *k8s.Clients) []tool.Tool {

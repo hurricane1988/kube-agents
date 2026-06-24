@@ -101,6 +101,52 @@ func StartHTTPWithRunner(cfg config.HTTPServerConfig, r runner.Runner, sessionSv
 	return &Server{httpSrv}, nil
 }
 
+// StartHTTPWithHandlers starts the HTTP server with additional custom handlers
+// mounted alongside the OpenAI API handler.
+func StartHTTPWithHandlers(cfg config.HTTPServerConfig, r runner.Runner, sessionSvc session.Service, extraHandlers map[string]http.Handler) (*Server, error) {
+	if !cfg.Enabled {
+		return nil, nil
+	}
+
+	openaiHandler, err := buildOpenAIHandler(r, sessionSvc)
+	if err != nil {
+		return nil, err
+	}
+
+	mux := http.NewServeMux()
+	mux.Handle("/v1/chat/completions", openaiHandler)
+
+	for path, handler := range extraHandlers {
+		mux.Handle(path, handler)
+	}
+
+	addr := fmt.Sprintf(":%d", cfg.Port)
+	httpSrv := &http.Server{Addr: addr, Handler: mux}
+
+	go func() {
+		slog.Info("HTTP server listening", "addr", addr)
+		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			slog.Error("HTTP server error", "error", err)
+		}
+	}()
+
+	return &Server{httpSrv}, nil
+}
+
+func buildOpenAIHandler(r runner.Runner, sessionSvc session.Service) (http.Handler, error) {
+	var opts []openai.Option
+	opts = append(opts, openai.WithRunner(r))
+	opts = append(opts, openai.WithAppName("kube-agents"))
+	if sessionSvc != nil {
+		opts = append(opts, openai.WithSessionService(sessionSvc))
+	}
+	srv, err := openai.New(opts...)
+	if err != nil {
+		return nil, fmt.Errorf("create OpenAI handler: %w", err)
+	}
+	return srv.Handler(), nil
+}
+
 // Shutdown gracefully stops the server with a default timeout.
 func (s *Server) Shutdown(ctx context.Context) error {
 	shutdownCtx, cancel := context.WithTimeout(ctx, defaultShutdownTimeout)

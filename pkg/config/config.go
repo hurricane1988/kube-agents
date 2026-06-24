@@ -98,6 +98,22 @@ type RedisConfig struct {
 // KnowledgeConfig holds RAG knowledge store settings.
 type KnowledgeConfig struct {
 	Sources []KnowledgeSource `yaml:"sources"`
+	S3      S3Config          `yaml:"s3"`
+}
+
+// S3Config holds S3-compatible object storage settings.
+type S3Config struct {
+	Enabled        bool   `yaml:"enabled"`
+	Endpoint       string `yaml:"endpoint"`
+	Region         string `yaml:"region"`
+	AccessKey      string `yaml:"accessKey"`
+	SecretKey      string `yaml:"secretKey"`
+	Bucket         string `yaml:"bucket"`
+	Prefix         string `yaml:"prefix"`
+	AccessKeyEnv   string `yaml:"accessKeyEnv"`
+	SecretKeyEnv   string `yaml:"secretKeyEnv"`
+	UseSSL         bool   `yaml:"useSSL"`
+	ForcePathStyle bool   `yaml:"forcePathStyle"`
 }
 
 // KnowledgeSource is a document source for the knowledge store.

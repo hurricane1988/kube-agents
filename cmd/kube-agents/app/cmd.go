@@ -21,6 +21,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
@@ -39,6 +40,7 @@ import (
 	"github.com/codefuture-io/kube-agents/pkg/config"
 	"github.com/codefuture-io/kube-agents/pkg/k8s"
 	k8stools "github.com/codefuture-io/kube-agents/pkg/k8s/tools"
+	knowledgepkg "github.com/codefuture-io/kube-agents/pkg/knowledge"
 	memorypkg "github.com/codefuture-io/kube-agents/pkg/memory"
 	"github.com/codefuture-io/kube-agents/pkg/plugin"
 	"github.com/codefuture-io/kube-agents/pkg/server"
@@ -169,12 +171,24 @@ func runServe(cfg config.Config, opts *options.Options) error {
 		runnerOpts = append(runnerOpts, runner.WithPlugins(plugins...))
 		slog.Info("Plugins loaded", "names", pluginReg.Names())
 	}
+	// Knowledge store (requires OpenAI-compatible embeddings API).
+	knowledgeStore, _ := knowledgepkg.NewStore(cfg.Knowledge, apiKey)
+	if knowledgeStore != nil && knowledgeStore.SearchTool() != nil {
+		tools = append(tools, knowledgeStore.SearchTool())
+	}
+
+	// Rebuild agent with knowledge search tool included.
+	llmAgent = agent.MustNewLLMAgent(modelInstance, tools, genConfig)
 	r := runner.NewRunner("kube-agents-app", llmAgent, runnerOpts...)
 	defer r.Close()
 
 	var httpSrv *server.Server
 	if cfg.Server.HTTP.Enabled {
-		httpSrv, err = server.StartHTTPWithRunner(cfg.Server.HTTP, r, sessionSvc)
+		extraHandlers := map[string]http.Handler{}
+		if knowledgeStore != nil {
+			extraHandlers["/v1/knowledge/upload"] = server.KnowledgeUploadHandler(knowledgeStore)
+		}
+		httpSrv, err = server.StartHTTPWithHandlers(cfg.Server.HTTP, r, sessionSvc, extraHandlers)
 		if err != nil {
 			return fmt.Errorf("HTTP server: %w", err)
 		}
@@ -224,13 +238,23 @@ func runChat(opts *options.Options) error {
 	modelOpts = append(modelOpts, openai.WithVariant(openai.VariantDeepSeek))
 
 	modelInstance := openai.New(modelName, modelOpts...)
-	calculatorTool := agent.CalculatorTool()
+
+	// Build tools: calculator + K8s if available.
+	tools := []tool.Tool{agent.CalculatorTool()}
+	k8sClients, k8sErr := k8s.NewClients()
+	if k8sErr != nil {
+		slog.Warn("K8s client unavailable, K8s tools disabled", "error", k8sErr)
+	} else {
+		tools = append(tools, k8stools.MustNewToolSet(k8sClients)...)
+		slog.Info("K8s tools registered", "namespace", k8sClients.Namespace)
+	}
+
 	genConfig := model.GenerationConfig{
 		Stream:      true,
 		Temperature: ptrOf(0.7),
 	}
 
-	llmAgent := agent.MustNewLLMAgent(modelInstance, []tool.Tool{calculatorTool}, genConfig)
+	llmAgent := agent.MustNewLLMAgent(modelInstance, tools, genConfig)
 	r := runner.NewRunner("kube-agents-app", llmAgent)
 	defer r.Close()
 

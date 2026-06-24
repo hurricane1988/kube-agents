@@ -18,6 +18,7 @@ package server
 
 import (
 	"fmt"
+	"log/slog"
 
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/runner"
@@ -28,6 +29,7 @@ import (
 )
 
 // StartA2A starts an Agent-to-Agent protocol server.
+// Uses WithAgent — the framework auto-builds an AgentCard from agent info.
 func StartA2A(cfg config.A2AServerConfig, ag agent.Agent, sessionSvc session.Service) error {
 	if !cfg.Enabled {
 		return nil
@@ -46,9 +48,9 @@ func StartA2A(cfg config.A2AServerConfig, ag agent.Agent, sessionSvc session.Ser
 	}
 
 	go func() {
-		fmt.Printf("A2A server starting on %s\n", cfg.Host)
+		slog.Info("A2A server starting", "host", cfg.Host)
 		if err := srv.Start(cfg.Host); err != nil {
-			fmt.Printf("A2A server error: %v\n", err)
+			slog.Error("A2A server error", "error", err)
 		}
 	}()
 
@@ -56,6 +58,7 @@ func StartA2A(cfg config.A2AServerConfig, ag agent.Agent, sessionSvc session.Ser
 }
 
 // StartA2AWithRunner starts the A2A server using a pre-built runner.
+// When using a runner, an AgentCard must be provided explicitly.
 func StartA2AWithRunner(cfg config.A2AServerConfig, r runner.Runner, sessionSvc session.Service) error {
 	if !cfg.Enabled {
 		return nil
@@ -68,15 +71,27 @@ func StartA2AWithRunner(cfg config.A2AServerConfig, r runner.Runner, sessionSvc 
 		opts = append(opts, a2aserver.WithSessionService(sessionSvc))
 	}
 
+	// Build an agent card for the A2A server.
+	card, err := a2aserver.NewAgentCard(
+		"kube-agents",
+		"Kubernetes AI operations assistant with 24 built-in K8s tools",
+		cfg.Host,
+		true,
+	)
+	if err != nil {
+		return fmt.Errorf("create agent card: %w", err)
+	}
+	opts = append(opts, a2aserver.WithAgentCard(card))
+
 	srv, err := a2aserver.New(opts...)
 	if err != nil {
 		return fmt.Errorf("create A2A server: %w", err)
 	}
 
 	go func() {
-		fmt.Printf("A2A server starting on %s\n", cfg.Host)
+		slog.Info("A2A server starting", "host", cfg.Host)
 		if err := srv.Start(cfg.Host); err != nil {
-			fmt.Printf("A2A server error: %v\n", err)
+			slog.Error("A2A server error", "error", err)
 		}
 	}()
 

@@ -1,44 +1,91 @@
+# kube-agents configuration file.
+# All keys use camelCase. Environment variable references are resolved at startup.
+
+# Server endpoints configuration.
 server:
+  # OpenAI-compatible HTTP API (POST /v1/chat/completions + SSE streaming).
   http:
     enabled: true
     port: 8080
+  # gRPC API (proto definition in api/proto/).
   grpc:
     enabled: false
     port: 9090
+  # Agent-to-Agent protocol (A2A) JSON-RPC endpoint.
   a2a:
     enabled: false
     host: "localhost:8080"
 
+# LLM model configuration.
 model:
   provider: deepseek
   name: deepseek-chat
+  # Environment variable name for the API key.
   apiKeyEnv: DEEPSEEK_API_KEY
 
+# Authentication and authorization.
 auth:
+  # Mode: "serviceaccount" (K8s TokenReview) or "jwt" (self-issued JWT).
   mode: serviceaccount
   jwt:
     issuer: kube-agents
     secretEnv: JWT_SECRET
 
+# Session persistence for conversation history.
 session:
+  # Backend: "memory" (dev) or "redis" (production).
   backend: memory
   redis:
     addr: "localhost:6379"
     passwordEnv: REDIS_PASSWORD
     db: 0
 
+# Long-term memory for user preferences.
 memory:
+  # Backend: "memory" (dev) or "redis" (production).
   backend: memory
   redis:
     addr: "localhost:6379"
     passwordEnv: REDIS_PASSWORD
     db: 1
 
+# RAG (Retrieval-Augmented Generation) knowledge store.
 knowledge:
+  # Static document sources loaded at startup.
   sources: []
+  # - type: file
+  #   path: ./docs/k8s-reference/
+  # - type: url
+  #   path: https://kubernetes.io/docs/
 
+  # S3-compatible object storage for knowledge documents.
+  s3:
+    enabled: false
+    # S3-compatible endpoint URL (AWS S3, MinIO, Alibaba OSS, Tencent COS, etc.).
+    endpoint: "https://s3.amazonaws.com"
+    region: "us-east-1"
+    # Credentials: set directly or via environment variables below.
+    accessKey: ""
+    secretKey: ""
+    bucket: "kube-agents-knowledge"
+    # Key prefix for uploaded objects.
+    prefix: "docs/"
+    # Environment variable names for credentials (used when accessKey/secretKey are empty).
+    accessKeyEnv: AWS_ACCESS_KEY_ID
+    secretKeyEnv: AWS_SECRET_ACCESS_KEY
+    useSSL: true
+    # Set to true for MinIO or other path-style S3-compatible services.
+    forcePathStyle: false
+
+# External MCP (Model Context Protocol) tool servers.
 mcpServers: []
+# - name: kubectl
+#   transport: stdio
+#   command: kubectl
+#   args: ["mcp"]
 
+# Built-in plugins enabled by name: audit, ratelimit, logging.
 plugins: []
 
+# Directory containing SKILL.md workflow modules.
 skillsDir: ./skills/
