@@ -141,14 +141,30 @@ curl http://localhost:8080/v1/sessions
 curl -X DELETE http://localhost:8080/v1/sessions/my-session-id
 ```
 
-CLI chat mode generates a session ID on start and prints a resume command on exit:
+CLI chat mode shows a Claude Code-style startup banner and generates a session ID:
 
 ```bash
 $ ./bin/kube-agents chat --api-key=sk-xxx
-Session: 148ab353-04b6-4278-94a9-ab757f70f024
+
+╭─── kube-agents 0.1.0 ──────────────────────────────────────────────────────────────────────────────╮
+│                                        │                                                            │
+│             Welcome Back!              │ Tips for getting started                                   │
+│                                        │ /help    Show available commands                           │
+│                ▐⎈██⎈▜▌                 │ /exit    Exit and save session                             │
+│               ▝▜█████▛▘                │ ────────────────────────────────────────────────────────── │
+│                 ▘▘ ▝▝                  │ Session                                                    │
+│                                        │ Resume:  chat --session-id <id>                            │
+│                                        │ Clear:   chat --clear-session <id>                         │
+│                                        │                                                            │
+│    Model: deepseek-chat                │                                                            │
+│    Namespace: default                  │                                                            │
+│    Session: 1d75ebe8...699488cbfda6    │                                                            │
+│    ~/github/kube-agents                │                                                            │
+╰─────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
 > /exit
 Goodbye! To resume:
-  kube-agents chat --api-key=... --session-id=148ab353-...
+  kube-agents chat --api-key=... --session-id=1d75ebe8...
 ```
 
 Resume via HTTP by setting the `X-Session-ID` header or `--session-id` flag.
