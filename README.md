@@ -20,7 +20,7 @@ default 命名空间 Running 状态的 Pod：
 
 | Category | Capability |
 |----------|------------|
-| **K8s Operations** | 24 built-in tools covering pods, deployments, services, ingresses, HPAs, ConfigMaps, Secrets, namespaces, events, generic resources |
+| **K8s Operations** | 27 built-in tools covering pods, deployments, services, ingresses, HPAs, ConfigMaps, Secrets, namespaces, events, nodes, generic resources |
 | **LLM Backend** | DeepSeek (default), any OpenAI-compatible model |
 | **AuthN/AuthZ** | K8s ServiceAccount TokenReview + SubjectAccessReview; JWT extensible |
 | **HTTP API** | OpenAI-compatible `POST /v1/chat/completions` (non-streaming + SSE streaming) |
@@ -30,7 +30,7 @@ default 命名空间 Running 状态的 Pod：
 | **MCP** | External tool servers via stdio / SSE / streamable transports |
 | **Skills** | Reusable SKILL.md workflows: diagnose, deploy, security audit |
 | **RAG Knowledge** | Semantic search over K8s docs; runtime file upload API |
-| **Session** | Conversation state persistence (memory / Redis) |
+| **Session Management** | Resumable sessions with `--session-id`/`--continue`; list/delete via API |
 | **Memory** | Long-term user preference tracking (memory / Redis) |
 | **Logging** | `log/slog` structured logging: JSON/text, levels, file rotation (lumberjack) |
 | **Graceful Shutdown** | HTTP server drains in-flight requests; configurable timeout |
@@ -125,6 +125,33 @@ make build
 |--------|------|-------------|
 | `POST` | `/v1/chat/completions` | Chat completion (non-streaming + SSE streaming) |
 | `POST` | `/v1/knowledge/upload` | Upload a file to the RAG knowledge base |
+| `GET` | `/v1/knowledge/files` | List uploaded files |
+| `GET` | `/v1/sessions` | List all sessions |
+| `DELETE` | `/v1/sessions/{id}` | Delete a session |
+
+### Session Management
+
+Sessions persist conversation history. Resume any session by passing its ID.
+
+```bash
+# List sessions
+curl http://localhost:8080/v1/sessions
+
+# Delete a session
+curl -X DELETE http://localhost:8080/v1/sessions/my-session-id
+```
+
+CLI chat mode generates a session ID on start and prints a resume command on exit:
+
+```bash
+$ ./bin/kube-agents chat --api-key=sk-xxx
+Session: 148ab353-04b6-4278-94a9-ab757f70f024
+> /exit
+Goodbye! To resume:
+  kube-agents chat --api-key=... --session-id=148ab353-...
+```
+
+Resume via HTTP by setting the `X-Session-ID` header or `--session-id` flag.
 
 ### Chat Completion
 
@@ -172,14 +199,34 @@ curl -N -X POST http://localhost:8080/v1/chat/completions \
 
 Upload files to the RAG knowledge base at runtime. Accepted formats: `.md`, `.txt`, `.yaml`, `.yml`, `.json`, `.html`, `.pdf` (max 10MB).
 
+Files are organized by session ID. If S3 is configured, files go to `s3://{bucket}/{prefix}/{sessionID}/{filename}`. Otherwise, they are stored locally at `$TMPDIR/kube-agents-knowledge/{sessionID}/`.
+
 ```bash
+# Basic upload
 curl -X POST http://localhost:8080/v1/knowledge/upload \
   -F "file=@docs/kubernetes-guide.md"
+
+# With session ID (via header or query param)
+curl -X POST http://localhost:8080/v1/knowledge/upload \
+  -H "X-Session-ID: user-001" \
+  -F "file=@docs/k8s-guide.md"
+
+curl -X POST "http://localhost:8080/v1/knowledge/upload?session=user-001" \
+  -F "file=@docs/k8s-guide.md"
 ```
 
-Success: `{"message":"file uploaded and indexed","filename":"kubernetes-guide.md","size":2048}`
+Success response:
+```json
+{"message":"file uploaded and indexed","filename":"k8s-guide.md","size":2048,"upload_dir":"/tmp/kube-agents-knowledge"}
+```
 
-> RAG indexing requires an OpenAI-compatible `/embeddings` endpoint. DeepSeek does not currently support embeddings — use an OpenAI API key via `OPENAI_API_KEY`.
+List uploaded files:
+```bash
+curl http://localhost:8080/v1/knowledge/files
+# {"upload_dir":"/tmp/kube-agents-knowledge","files":["k8s-guide.md","README.md"]}
+```
+
+> **Note**: Built-in text search (no embedding API required) searches `.md/.txt/.yaml` files in configured `knowledge.sources` directories. Uploaded files are stored but indexed only when the embedding API is available.
 
 ---
 
@@ -213,7 +260,7 @@ Response:
 ```json
 {
   "name": "kube-agents",
-  "description": "Kubernetes AI operations assistant with 24 built-in K8s tools",
+  "description": "Kubernetes AI operations assistant with 27 built-in K8s tools",
   "url": "http://localhost:18080"
 }
 ```
@@ -269,7 +316,7 @@ curl -N -X POST http://localhost:18080/ \
 
 ## K8s Tools
 
-24 built-in tools + `knowledge_search` (RAG), verified against K8s v1.31.12.
+27 built-in tools + `knowledge_search` (RAG), verified against K8s v1.31.12.
 
 ### Core Resources
 
@@ -281,13 +328,16 @@ curl -N -X POST http://localhost:18080/ \
 | `pod_delete` | delete | Confirmation message |
 | `deployment_list` | list | Ready/available replicas |
 | `deployment_get` | get | Replicas, image, strategy, conditions |
-| `deployment_scale` | update | Scale confirmation |
+| `deployment_scale` | update | Scale replicas up/down |
+| `deployment_update` | update | Replicas, image, nodeSelector, tolerations |
 | `service_list` | list | Type, cluster IP, ports |
 | `service_get` | get | Ports, selector, external IP |
 | `namespace_list` | list | Name, status, age |
 | `namespace_get` | get | Labels |
 | `namespace_set` | — | Switch active namespace |
 | `event_list` | list | Filter by type (Normal/Warning) |
+| `node_list` | list | Status, roles, version, CPU, memory |
+| `node_get` | get | Capacity, allocatable, conditions, taints, IP |
 
 ### Networking & Autoscaling
 

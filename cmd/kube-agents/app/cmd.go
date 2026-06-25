@@ -27,6 +27,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 
 	"trpc.group/trpc-go/trpc-agent-go/model"
@@ -47,6 +48,7 @@ import (
 	sessionpkg "github.com/codefuture-io/kube-agents/pkg/session"
 	"github.com/codefuture-io/kube-agents/utils/log"
 	"github.com/codefuture-io/kube-agents/version"
+	"github.com/fatih/color"
 )
 
 // NewCommand returns the root cobra command for kube-agents.
@@ -186,6 +188,9 @@ func runServe(cfg config.Config, opts *options.Options) error {
 		extraHandlers := map[string]http.Handler{}
 		if knowledgeStore != nil {
 			extraHandlers["/v1/knowledge/upload"] = server.KnowledgeUploadHandler(knowledgeStore)
+			extraHandlers["/v1/knowledge/files"] = server.KnowledgeListHandler(knowledgeStore)
+			extraHandlers["/v1/sessions"] = server.SessionListHandler(sessionSvc)
+			extraHandlers["/v1/sessions/"] = server.SessionDeleteHandler(sessionSvc)
 		}
 		httpSrv, err = server.StartHTTPWithHandlers(cfg.Server.HTTP, r, sessionSvc, extraHandlers)
 		if err != nil {
@@ -222,38 +227,42 @@ func runChat(opts *options.Options) error {
 		return fmt.Errorf("API key not provided. Set via --api-key flag or DEEPSEEK_API_KEY / OPENAI_API_KEY env var")
 	}
 
-	fmt.Printf("Model: %s\n", modelName)
-	if baseURL != "" {
-		fmt.Printf("Base URL: %s\n", baseURL)
+	// Session management.
+	sessionID := opts.SessionID
+	if sessionID == "" {
+		sessionID = uuid.New().String()
 	}
-	fmt.Println("Type a message to chat with the agent, type /exit to quit")
-	fmt.Println(strings.Repeat("-", 50))
 
+	// Build model.
 	var modelOpts []openai.Option
 	modelOpts = append(modelOpts, openai.WithAPIKey(apiKey))
 	if baseURL != "" {
 		modelOpts = append(modelOpts, openai.WithBaseURL(baseURL))
 	}
 	modelOpts = append(modelOpts, openai.WithVariant(openai.VariantDeepSeek))
-
 	modelInstance := openai.New(modelName, modelOpts...)
 
 	// Build tools: calculator + K8s if available.
 	tools := []tool.Tool{agent.CalculatorTool()}
+	var k8sNamespace string
 	k8sClients, k8sErr := k8s.NewClients()
 	if k8sErr != nil {
 		slog.Warn("K8s client unavailable, K8s tools disabled", "error", k8sErr)
 	} else {
 		tools = append(tools, k8stools.MustNewToolSet(k8sClients)...)
-		slog.Info("K8s tools registered", "namespace", k8sClients.Namespace)
+		k8sNamespace = k8sClients.Namespace
+		slog.Debug("K8s tools registered", "namespace", k8sNamespace)
 	}
 
 	// Knowledge store (built-in text search, no embedding API needed).
 	knowledgeStore, _ := knowledgepkg.NewStore(config.DefaultConfig().Knowledge, apiKey)
 	if knowledgeStore != nil && knowledgeStore.SearchTool() != nil {
 		tools = append(tools, knowledgeStore.SearchTool())
-		slog.Info("knowledge_search tool registered")
+		slog.Debug("knowledge_search tool registered")
 	}
+
+	// Print banner after initialization so we can show namespace, etc.
+	printChatBanner(modelName, baseURL, sessionID, k8sNamespace)
 
 	genConfig := model.GenerationConfig{
 		Stream:      true,
@@ -267,12 +276,86 @@ func runChat(opts *options.Options) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	return interactiveLoop(ctx, r)
+	return interactiveLoop(ctx, r, sessionID)
 }
 
-func interactiveLoop(ctx context.Context, r runner.Runner) error {
+// printChatBanner prints a Claude Code-style two-column startup banner for chat mode.
+func printChatBanner(modelName, baseURL, sessionID, k8sNamespace string) {
+	const LW = 38 // left column width (visible columns)
+	const RW = 58 // right column width (visible columns)
+	const CW = LW + 3 + RW
+
+	// Color function — only applied to art chars, never to padding spaces.
+	icon := color.New(color.FgHiCyan, color.Bold).SprintFunc()
+
+	// Build an exactly LW-wide centered art string, then colorize only the art chars.
+	art := func(raw string) string {
+		n := len([]rune(raw))
+		left := (LW - n) / 2
+		right := LW - left - n
+		return strings.Repeat(" ", left) + icon(raw) + strings.Repeat(" ", right)
+	}
+
+	// rowPlain: both columns are plain text, padded by fmt.
+	rowPlain := func(left, right string) {
+		fmt.Printf("│ %-*s │ %-*s │\n", LW, left, RW, right)
+	}
+
+	// rowArt: left is pre-padded (may contain ANSI codes), right is padded by fmt.
+	rowArt := func(left, right string) {
+		fmt.Printf("│ %s │ %-*s │\n", left, RW, right)
+	}
+
+	// Top border.
+	title := fmt.Sprintf(" kube-agents %s ", version.Version)
+	total := CW + 2
+	fmt.Printf("╭───%s%s╮\n", title, strings.Repeat("─", total-4-len(title)))
+
+	centerText := func(s string) string {
+		n := len(s)
+		return strings.Repeat(" ", (LW-n)/2) + s
+	}
+
+	rowPlain("", "")
+	rowPlain(centerText("Welcome Back!"), "Tips for getting started")
+	rowPlain("", "/help    Show available commands")
+	rowArt(art("▐⎈██⎈▜▌"), "/exit    Exit and save session")
+	rowArt(art("▝▜█████▛▘"), strings.Repeat("─", RW))
+	rowArt(art("▘▘ ▝▝"), "Session")
+	rowPlain("", "Resume:  chat --session-id <id>")
+	rowPlain("", "Clear:   chat --clear-session <id>")
+	rowPlain("", "")
+	rowPlain("   Model: "+modelName, "")
+	if k8sNamespace != "" {
+		rowPlain("   Namespace: "+k8sNamespace, "")
+	}
+	rowPlain("   Session: "+truncateSessionID(sessionID), "")
+	cwd, _ := os.Getwd()
+	rowPlain("   "+shortenPath(cwd), "")
+
+	// Bottom border.
+	fmt.Printf("╰%s╯\n", strings.Repeat("─", total))
+}
+
+// truncateSessionID returns a shortened session ID like "f9025794...cc6bbffadfe6".
+func truncateSessionID(id string) string {
+	if len(id) <= 20 {
+		return id
+	}
+	return id[:8] + "..." + id[len(id)-12:]
+}
+
+// shortenPath replaces the home dir prefix with ~ for display.
+func shortenPath(path string) string {
+	home, err := os.UserHomeDir()
+	if err == nil {
+		path = strings.Replace(path, home, "~", 1)
+	}
+	return path
+}
+
+func interactiveLoop(ctx context.Context, r runner.Runner, sessionID string) error {
 	scanner := bufio.NewScanner(os.Stdin)
-	sessionID := "session-001"
 
 	for {
 		fmt.Print("\n> ")
@@ -285,7 +368,8 @@ func interactiveLoop(ctx context.Context, r runner.Runner) error {
 			continue
 		}
 		if input == "/exit" {
-			fmt.Println("Goodbye!")
+			fmt.Printf("Goodbye! To resume this session:\n")
+			fmt.Printf("  kube-agents chat --api-key=... --session-id=%s\n", sessionID)
 			break
 		}
 

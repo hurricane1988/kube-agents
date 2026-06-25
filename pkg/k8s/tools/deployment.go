@@ -19,7 +19,9 @@ package tools
 import (
 	"context"
 	"fmt"
+	"strings"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"trpc.group/trpc-go/trpc-agent-go/tool"
@@ -197,4 +199,113 @@ func deployScale(ctx context.Context, c *k8s.Clients, req DeployScaleReq) (Deplo
 	return DeployScaleRsp{
 		Message: fmt.Sprintf("deployment %s/%s scaled to %d replicas", ns, req.Name, req.Replicas),
 	}, nil
+}
+
+// DeployUpdateReq is the input for updating deployment pod template spec.
+type DeployUpdateReq struct {
+	Name         string            `json:"name" jsonschema:"description=deployment name,required"`
+	Namespace    string            `json:"namespace" jsonschema:"description=namespace,omitempty"`
+	Replicas     *int32            `json:"replicas" jsonschema:"description=target number of replicas,omitempty"`
+	Image        string            `json:"image" jsonschema:"description=new container image,omitempty"`
+	NodeSelector map[string]string `json:"node_selector" jsonschema:"description=node labels for pod scheduling,omitempty"`
+	Tolerations  []string          `json:"tolerations" jsonschema:"description=tolerations in key=value:Effect format,omitempty"`
+}
+
+// DeployUpdateRsp is the output.
+type DeployUpdateRsp struct {
+	Message string `json:"message"`
+	Err     string `json:"error,omitempty"`
+}
+
+// NewDeploymentUpdateTool creates a tool for updating a deployment's pod template.
+func NewDeploymentUpdateTool(clients *k8s.Clients) tool.Tool {
+	return function.NewFunctionTool(
+		func(ctx context.Context, req DeployUpdateReq) (DeployUpdateRsp, error) {
+			return deployUpdate(ctx, clients, req)
+		},
+		function.WithName("deployment_update"),
+		function.WithDescription("Update deployment: adjust replicas, change container image, set nodeSelector, or add tolerations for scheduling control."),
+	)
+}
+
+func deployUpdate(ctx context.Context, c *k8s.Clients, req DeployUpdateReq) (DeployUpdateRsp, error) {
+	ns := req.Namespace
+	if ns == "" {
+		ns = c.Namespace
+	}
+
+	d, err := c.ClientSet.AppsV1().Deployments(ns).Get(ctx, req.Name, metav1.GetOptions{})
+	if err != nil {
+		return DeployUpdateRsp{Err: err.Error()}, nil
+	}
+
+	updated := false
+	podSpec := &d.Spec.Template.Spec
+
+	if req.Replicas != nil {
+		d.Spec.Replicas = req.Replicas
+		updated = true
+	}
+
+	if req.Image != "" && len(podSpec.Containers) > 0 {
+		podSpec.Containers[0].Image = req.Image
+		updated = true
+	}
+
+	if req.NodeSelector != nil {
+		podSpec.NodeSelector = req.NodeSelector
+		updated = true
+	}
+
+	for _, t := range req.Tolerations {
+		tol := corev1.Toleration{Operator: corev1.TolerationOpExists}
+		parts := splitTol(t)
+		if len(parts) >= 1 {
+			tol.Key = parts[0]
+		}
+		if len(parts) >= 2 && parts[1] != "" {
+			tol.Value = parts[1]
+			tol.Operator = corev1.TolerationOpEqual
+		}
+		if len(parts) >= 3 {
+			tol.Effect = corev1.TaintEffect(parts[2])
+		}
+		podSpec.Tolerations = append(podSpec.Tolerations, tol)
+		updated = true
+	}
+
+	if !updated {
+		return DeployUpdateRsp{Message: "no changes specified"}, nil
+	}
+
+	_, err = c.ClientSet.AppsV1().Deployments(ns).Update(ctx, d, metav1.UpdateOptions{})
+	if err != nil {
+		return DeployUpdateRsp{Err: err.Error()}, nil
+	}
+	msg := fmt.Sprintf("deployment %s/%s updated", ns, req.Name)
+	if req.Replicas != nil {
+		msg = fmt.Sprintf("deployment %s/%s updated (replicas=%d)", ns, req.Name, *req.Replicas)
+	}
+	return DeployUpdateRsp{Message: msg}, nil
+}
+
+func splitTol(s string) []string {
+	var parts []string
+	rest := s
+	if idx := strings.IndexByte(rest, '='); idx >= 0 {
+		parts = append(parts, rest[:idx])
+		rest = rest[idx+1:]
+	} else if idx := strings.IndexByte(rest, ':'); idx >= 0 {
+		parts = append(parts, rest[:idx])
+		rest = rest[idx+1:]
+	} else {
+		return append(parts, rest)
+	}
+	if idx := strings.IndexByte(rest, ':'); idx >= 0 {
+		parts = append(parts, rest[:idx])
+		parts = append(parts, rest[idx+1:])
+	} else {
+		parts = append(parts, rest)
+	}
+	return parts
 }

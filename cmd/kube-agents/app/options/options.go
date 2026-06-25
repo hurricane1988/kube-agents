@@ -31,6 +31,10 @@ type Options struct {
 	APIKey     string
 	BaseURL    string
 
+	// Session management.
+	SessionID string
+	Continue  bool
+
 	// Logging.
 	Log log.Options
 }
@@ -55,6 +59,12 @@ func (o *Options) AddFlags(cmd *cobra.Command) {
 		"API base URL (env: OPENAI_BASE_URL)")
 	cmd.PersistentFlags().StringVar(&o.ModelName, "model", o.ModelName,
 		"Model name to use")
+
+	// Session flags.
+	cmd.PersistentFlags().StringVar(&o.SessionID, "session-id", o.SessionID,
+		"Session ID (resume a previous session or start new)")
+	cmd.PersistentFlags().BoolVar(&o.Continue, "continue", o.Continue,
+		"Continue the most recent session")
 
 	// Log flags.
 	cmd.PersistentFlags().StringVar(&o.Log.Level, "log-level", o.Log.Level,

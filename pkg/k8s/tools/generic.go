@@ -286,6 +286,8 @@ func MustNewToolSet(clients *k8s.Clients) []tool.Tool {
 		NewSecretGetTool(clients),
 		NewResourceListTool(clients),
 		NewResourceGetTool(clients),
+		NewNodeListTool(clients),
+		NewNodeGetTool(clients),
 		NewClusterInfoTool(clients),
 	}
 }

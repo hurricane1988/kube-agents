@@ -41,8 +41,12 @@ type Store struct {
 // NewStore creates a knowledge store from configured sources.
 // Uses simple text matching search — no embedding API required.
 func NewStore(cfg config.KnowledgeConfig, apiKey string) (*Store, error) {
+	uploadDir := filepath.Join(os.TempDir(), "kube-agents-knowledge")
+	if d := os.Getenv("KNOWLEDGE_UPLOAD_DIR"); d != "" {
+		uploadDir = d
+	}
 	store := &Store{
-		uploadDir: filepath.Join(os.TempDir(), "kube-agents-knowledge"),
+		uploadDir: uploadDir,
 	}
 
 	// Initialize S3 store if configured.
@@ -64,9 +68,9 @@ func NewStore(cfg config.KnowledgeConfig, apiKey string) (*Store, error) {
 	}
 
 	if len(docPaths) > 0 {
-		slog.Info("knowledge store initialized with local files", "count", len(docPaths))
+		slog.Debug("knowledge store initialized with local files", "count", len(docPaths))
 	} else {
-		slog.Info("knowledge store ready (no pre-configured sources, upload API available)")
+		slog.Debug("knowledge store ready (no pre-configured sources, upload API available)")
 	}
 
 	// Create the built-in search tool using simple text matching.
@@ -103,38 +107,72 @@ type SearchResult struct {
 }
 
 // AddFile adds a file to the knowledge base at runtime.
-func (s *Store) AddFile(ctx interface{}, filename string, content []byte) error {
+// If S3 is configured, the file is uploaded to {prefix}/{sessionID}/{filename} in the bucket.
+// Otherwise it is stored in the local upload directory.
+func (s *Store) AddFile(ctx interface{}, sessionID, filename string, content []byte) error {
 	c, _ := ctx.(context.Context)
 	if c == nil {
 		c = context.Background()
 	}
 
-	// Write to local temp dir.
-	if err := os.MkdirAll(s.uploadDir, 0755); err != nil {
-		return fmt.Errorf("create upload dir: %w", err)
-	}
-	dst := filepath.Join(s.uploadDir, filepath.Base(filename))
-	if err := os.WriteFile(dst, content, 0644); err != nil {
-		return fmt.Errorf("write uploaded file: %w", err)
+	if sessionID == "" {
+		sessionID = "default"
 	}
 
-	// Upload to S3 if configured.
+	var storedPath string
+
 	if s.s3 != nil {
-		key, err := s.s3.UploadObject(c, filename, content)
+		// S3-first: upload to object storage under session directory.
+		key, err := s.s3.UploadObject(c, sessionID, filename, content)
 		if err != nil {
-			slog.Warn("S3 upload failed", "file", filename, "error", err)
-		} else {
-			slog.Info("S3 upload OK", "key", key)
+			return fmt.Errorf("S3 upload: %w", err)
 		}
+		storedPath = "s3://" + s.s3.Bucket() + "/" + key
+	} else {
+		// Fallback: write to local temp dir organized by session.
+		sessionDir := filepath.Join(s.uploadDir, sessionID)
+		if err := os.MkdirAll(sessionDir, 0755); err != nil {
+			return fmt.Errorf("create session dir: %w", err)
+		}
+		dst := filepath.Join(sessionDir, filepath.Base(filename))
+		if err := os.WriteFile(dst, content, 0644); err != nil {
+			return fmt.Errorf("write file: %w", err)
+		}
+		storedPath = dst
 	}
 
-	slog.Info("knowledge file added", "file", filename, "size", len(content))
+	slog.Info("knowledge file added",
+		"file", filename,
+		"session", sessionID,
+		"size", len(content),
+		"path", storedPath,
+	)
 	return nil
 }
 
 // SearchTool returns the knowledge search tool for agent registration.
 func (s *Store) SearchTool() tool.Tool {
 	return s.search
+}
+
+// UploadDir returns the directory where uploaded files are stored.
+func (s *Store) UploadDir() string {
+	return s.uploadDir
+}
+
+// ListFiles returns files currently in the upload directory.
+func (s *Store) ListFiles() []string {
+	entries, err := os.ReadDir(s.uploadDir)
+	if err != nil {
+		return nil
+	}
+	var names []string
+	for _, e := range entries {
+		if !e.IsDir() {
+			names = append(names, e.Name())
+		}
+	}
+	return names
 }
 
 // --- built-in text search ---
